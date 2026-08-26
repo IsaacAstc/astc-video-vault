@@ -1,0 +1,22 @@
+# ASTC Video Vault — Cloudflare Workers 설정.
+# 시크릿 값은 여기 넣지 않는다(이름만 참조):
+#   npx wrangler secret put FIREBASE_SERVICE_ACCOUNT   # 서비스 계정 키 JSON 전문
+#   npx wrangler secret put R2_ACCESS_KEY_ID
+#   npx wrangler secret put R2_SECRET_ACCESS_KEY
+#   npx wrangler secret put R2_ACCOUNT_ID
+name = "astc-video-vault"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+[vars]
+# [확인 필요] 실제 Firebase 프로젝트 ID (콘솔 → 프로젝트 설정에서 확인)
+FIREBASE_PROJECT_ID = "astc-lms"
+# GitHub Pages 도메인(경로 제외한 origin만)
+ALLOWED_ORIGIN = "https://isaacastc.github.io"
+R2_BUCKET = "astc-videos"
+
+# R2 바인딩: 서버 측 객체 조작(HEAD 검증·삭제)용.
+# presigned URL(브라우저 직접 PUT/GET)은 위 시크릿의 S3 API 키로 서명한다.
+[[r2_buckets]]
+binding = "VIDEOS"
+bucket_name = "astc-videos"

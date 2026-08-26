@@ -1,0 +1,12 @@
+{
+  "name": "astc-video-vault-worker",
+  "private": true,
+  "description": "ASTC Video Vault API — Cloudflare Workers (런타임 의존성 없음)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
