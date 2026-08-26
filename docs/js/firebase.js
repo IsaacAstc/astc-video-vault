@@ -5,14 +5,15 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-// [확인 필요] 아래 config 전체를 실제 값으로 교체 (README 배포 절차 2번)
+// 프로젝트 ID는 astc-lms로 확정(사용자 확인 완료).
+// [확인 필요] apiKey·messagingSenderId·appId는 콘솔에서 실제 값으로 교체 (README 배포 절차 2번)
 export const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "astc-lms.firebaseapp.com",   // [확인 필요] 실제 프로젝트 ID 기준
-  projectId: "astc-lms",                    // [확인 필요] Workers wrangler.toml의 FIREBASE_PROJECT_ID와 일치해야 함
-  storageBucket: "astc-lms.appspot.com",    // [확인 필요]
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID",
+  apiKey: "YOUR_API_KEY",                   // [확인 필요]
+  authDomain: "astc-lms.firebaseapp.com",
+  projectId: "astc-lms",
+  storageBucket: "astc-lms.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",      // [확인 필요]
+  appId: "YOUR_APP_ID",                     // [확인 필요]
 };
 
 export const app = initializeApp(firebaseConfig);
