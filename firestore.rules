@@ -1,0 +1,402 @@
+rules_version = '2';
+
+// ============================================================================
+// astc-lms Firebase 프로젝트 통합 Firestore 보안규칙 — 유일한 배포 원본.
+//
+// 이 파일은 두 구간으로 구성된다.
+//   [A] 기존 LMS(IsaacAstc/lms) 규칙 원문 — 이 구간은 수정하지 말 것.
+//       LMS 쪽 규칙이 바뀌면 해당 저장소의 firestore.rules 원문으로
+//       이 구간을 통째로 교체한다.
+//   [B] ASTC Video Vault 규칙 — 이 저장소가 관리하는 신규 구간.
+//
+// 한 프로젝트의 규칙은 배포 시 통째로 교체되므로, [A] 없이 배포하면
+// 운영 중인 LMS가 마비된다. 배포 전 반드시 ./scripts/check-rules.sh 를
+// 실행해 [A] 구간 누락 여부를 검증할 것.
+// 배포: firebase deploy --only firestore:rules
+// ============================================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ════════════════════════════════════════════════════════════════════
+    // [A] 기존 LMS 규칙 원문 (IsaacAstc/lms firestore.rules) — 수정 금지
+    // ════════════════════════════════════════════════════════════════════
+
+    // 관리자 판정: 허용 이메일 목록에 있는 로그인 사용자만.
+    // (공개 apiKey로 임의 회원가입한 계정이 관리자 권한을 얻는 것을 방지)
+    // 관리자 추가: 아래 배열에 이메일을 넣고 규칙을 다시 게시.
+    // 부트스트랩(초기) 관리자: 잠금 방지용 최소 목록. 나머지는 admins 컬렉션으로 관리.
+    function adminEmails() {
+      return ['isaac@airport.co.kr'];
+    }
+    // 이메일 대소문자 정규화: Auth는 가입 시 표기를 보존하므로 소문자로 맞춰 비교한다.
+    // (admins 문서 ID도 소문자로 저장 — 대문자 포함 계정이 인식되지 않는 문제 방지)
+    function adminEmail() {
+      return request.auth.token.email.lower();
+    }
+    function isAdmin() {
+      return request.auth != null
+        && (adminEmail() in adminEmails()
+            || exists(/databases/$(database)/documents/admins/$(adminEmail())));
+    }
+
+    // 마스터 관리자: 부트스트랩 목록에 있거나 admins 문서의 role이 'master'.
+    // (role은 아래 규칙에 따라 마스터만 부여·변경할 수 있어 권한 상승이 불가능)
+    function myAdminDoc() {
+      return get(/databases/$(database)/documents/admins/$(adminEmail())).data;
+    }
+    function isMaster() {
+      return request.auth != null
+        && (adminEmail() in adminEmails()
+            || (exists(/databases/$(database)/documents/admins/$(adminEmail()))
+                && myAdminDoc().get('role', 'admin') == 'master'));
+    }
+
+    // 계정별 사용 가능 탭(admins/{email}.tabs). 필드가 없으면 제한 없음(기존 계정 호환).
+    // 마스터는 항상 전체 허용. 화면 숨김과 별개로 여기서 실제 쓰기를 차단한다.
+    // (읽기는 탭 간 참조가 많아 관리자 공통으로 두고, 편집 권한만 탭 단위로 나눈다)
+    function myTabs() {
+      return exists(/databases/$(database)/documents/admins/$(adminEmail()))
+        ? myAdminDoc().get('tabs', null) : null;
+    }
+    // 참관자(조회 전용): role == 'observer'. 읽기는 관리자와 동일, 쓰기는 전면 차단.
+    function isObserver() {
+      return request.auth != null
+        && !(adminEmail() in adminEmails())
+        && exists(/databases/$(database)/documents/admins/$(adminEmail()))
+        && myAdminDoc().get('role', 'admin') == 'observer';
+    }
+    // 쓰기 가능한 관리자(참관자 제외).
+    function canWrite() {
+      return isAdmin() && !isObserver();
+    }
+    function canTab(t) {
+      return canWrite() && (isMaster() || myTabs() == null || t in myTabs());
+    }
+
+    // 관리자 계정 목록(문서ID=이메일).
+    //  - 읽기: 관리자 공통
+    //  - 생성·수정: '관리자 계정' 탭 권한 필요.
+    //    role='master' 부여와 tabs(사용 가능 탭) 변경은 마스터만 —
+    //    일반 관리자가 자기 권한을 스스로 늘리는 것을 차단한다.
+    //  - 삭제: 마스터만
+    match /admins/{email} {
+      allow read: if isAdmin();
+      allow create: if canTab('admins')
+        && (request.resource.data.get('role', 'admin') != 'master' || isMaster())
+        && (isMaster() || !('tabs' in request.resource.data.keys()));
+      allow update: if canTab('admins')
+        && (request.resource.data.get('role', 'admin') != 'master' || isMaster())
+        && (isMaster() || !('tabs' in request.resource.data.diff(resource.data).affectedKeys()));
+      allow delete: if isMaster();
+    }
+
+    // 과정·차수 마스터: 읽기·쓰기 모두 관리자 전용.
+    match /courses/{courseId} {
+      allow read: if isAdmin();
+      allow write: if canTab('courses');
+    }
+
+    // 강의 시간표: 읽기·쓰기 모두 관리자 전용.
+    match /sessions/{sessionId} {
+      allow read: if isAdmin();
+      allow write: if canTab('courses');
+    }
+
+    // 강의실 마스터: 관리자 전용.
+    match /rooms/{roomId} {
+      allow read: if isAdmin();
+      allow write: if canTab('rooms');
+    }
+
+    // 강사 마스터(개인정보 예외 — 강사에 한함): 관리자 전용, 공개 금지.
+    match /instructors/{instructorId} {
+      allow read: if isAdmin();
+      allow write: if canTab('instructors');
+    }
+
+    // 과정 커리큘럼 마스터: 관리자 전용.
+    match /programs/{programId} {
+      allow read: if isAdmin();
+      allow write: if canTab('programs');
+    }
+
+    // 기준값 설정(강사료·여비): 관리자 전용.
+    // 단 데이터 보존정책(dataPolicy)·과정유형 목록(courseTypes)은 마스터만 변경.
+    match /settings/{docId} {
+      allow read: if isAdmin();
+    // 문서별 담당 탭:
+    //   dataPolicy·courseTypes = 마스터, apply = 공개 보드, surveyCategories = 주관식 원문,
+    //   그 외(feeRates·travelRates·surveyItems) = 기준값 설정
+      allow write: if (docId == 'dataPolicy' || docId == 'courseTypes') ? isMaster()
+        : docId == 'apply' ? canTab('board')
+        : docId == 'surveyCategories' ? canTab('freetext')
+        : docId == 'logiPush' ? canTab('logi')
+        : canTab('settings');
+      // 로지보드 푸시 공개키(VAPID public key — 원래 공개값): 참가자 페이지가 읽는다.
+      allow read: if docId == 'logiPush';
+    }
+
+    // 소요경비(월별): 관리자 전용.
+    match /expenses/{docId} {
+      allow read: if isAdmin();
+      allow write: if canTab('expenses');
+    }
+
+    // 공개 설문 정의: 누구나 읽기(응답 페이지 렌더), 쓰기는 관리자만.
+    match /publicSurveys/{courseId} {
+      allow read: if true;
+      allow write: if canTab('surveys') || canTab('courses');
+    }
+
+    // 공개 현황 보드(외부 열람용): 누구나 읽기, 쓰기는 관리자만.
+    // 개인정보 없음 — 과정명·일자·정원·신청·잔여 등 수치·일정만 미러링.
+    match /publicBoard/{docId} {
+      allow read: if true;
+      allow write: if canTab('courses') || canTab('rentals') || canTab('board');
+    }
+
+    // 설문 응답: create 만 공개 허용(완전 익명), 읽기·수정·삭제는 관리자만.
+    // expireAt은 서버시각 기준 약 180일 후여야 함(클라이언트 조작 방지, ±2일 허용).
+    match /surveyResponses/{responseId} {
+      allow create: if request.resource.data.expireAt is timestamp
+        && request.resource.data.expireAt > request.time + duration.value(178, 'd')
+        && request.resource.data.expireAt < request.time + duration.value(182, 'd');
+      // 원문 파기(삭제)는 되돌릴 수 없으므로 마스터 전용('데이터 관리' 메뉴).
+      allow read: if isAdmin();
+      allow update: if canTab('freetext');
+      allow delete: if isMaster();
+    }
+
+    // 집계 데이터(영구 보관): 읽기는 관리자 공통(집계·통계·보고서 탭에서 조회),
+    // 쓰기는 월별 스냅샷·시사점을 저장하는 '주관식 원문' 탭(+ 파기 스냅샷은 마스터).
+    match /surveyAggregates/{aggregateId} {
+      allow read: if isAdmin();
+      allow write: if canTab('freetext');
+    }
+
+    // ── 동거 앱: 항공보안 히어로 미션(scfe/) — LMS Firebase 프로젝트로 통합 ──
+    // 관리자 판정은 위 admins 컬렉션을 그대로 공유한다(LMS 관리자 = scfe 관리자).
+
+    // 행사(세션): 참가자 앱이 행사명·일정을 읽어야 하므로 공개 읽기, 쓰기는 관리자만.
+    match /events/{eventId} {
+      allow read: if true;
+      allow write: if canWrite();
+    }
+
+    // 미션 설정(문구·항목·제한시간): 참가자 앱이 읽어야 하므로 공개 읽기, 쓰기는 관리자만.
+    // (LMS의 관리자 전용 settings 와 분리된 별도 컬렉션)
+    match /scfeSettings/{docId} {
+      allow read: if true;
+      allow write: if canWrite();
+    }
+
+    // 참가자(닉네임·점수만, 개인정보 없음): 리더보드용 공개 읽기.
+    match /participants/{docId} {
+      allow read: if true;
+      // 최초 생성: 닉네임·행사 형식만 검증, rewardGiven은 항상 false로 시작.
+      allow create: if request.resource.data.nickname is string
+                    && request.resource.data.nickname.size() > 0
+                    && request.resource.data.nickname.size() <= 20
+                    && request.resource.data.eventId is string
+                    && request.resource.data.eventId.size() > 0
+                    && request.resource.data.eventId.size() <= 64
+                    && request.resource.data.rewardGiven == false;
+      // 관리자는 전체 수정 가능. 비로그인 참가자는 rewardGiven(기념품 지급)만 변경 불가.
+      allow update: if canWrite()
+                    || !("rewardGiven" in request.resource.data.diff(resource.data).affectedKeys());
+      // 삭제(데이터 초기화)는 관리자만(참관자 제외).
+      allow delete: if canWrite();
+    }
+
+    // 대관 행사(현장 안내 DID 표출용): 행사명·장소·시간만 저장(개인정보 없음).
+    // DID는 로그인 없는 상시 화면이라 공개 읽기, 쓰기는 관리자만.
+    match /rentals/{rentalId} {
+      allow read: if true;
+      allow write: if canTab('rentals');
+    }
+
+    // 교육 신청 접수 기록 — Cloud Function(Admin SDK)만 생성·갱신.
+    // 접수번호 해시·과정ID·인원수·상태. 신청자 이메일은 반려 통지 목적으로만
+    // 신청 마감일(교육 시작일)까지 한시 보관되고 서버가 자동 파기한다.
+    // 공개 노출 금지 — 관리자 열람용 읽기만 허용.
+    match /applications/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // 요청 빈도 제한 카운터 — Cloud Function 전용(클라이언트 접근 금지).
+    match /rateLimits/{id} {
+      allow read, write: if false;
+    }
+
+    // ── ICAO 로지보드(국제과정 참가자 포털: 공지·투표·메신저·일정) ──
+    // 보드 설정 + 시간표 스냅샷(강사명 제외): 참여 페이지가 읽으므로 공개 읽기.
+    match /logiBoards/{courseId} {
+      allow read: if true;
+      allow write: if canTab('logi');
+    }
+    // 공지(bulletins): 관리자 작성, 참가자 열람.
+    match /logiBulletins/{id} {
+      allow read: if true;
+      allow write: if canTab('logi');
+    }
+    // 투표(polls): 관리자 작성·마감, 참가자는 votes 카운트만 갱신(기기당 1회는 클라이언트).
+    match /logiPolls/{id} {
+      allow read: if true;
+      allow create, delete: if canTab('logi');
+      allow update: if canTab('logi')
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['votes'])
+            && resource.data.get('open', true) == true);
+    }
+
+    // 푸시 토큰(FCM): 참가자 기기가 자기 토큰을 등록·갱신·해제한다(문서ID=토큰 — 토큰을 아는
+    // 본인 기기만 조작 가능). 목록 읽기는 관리자만(발송은 Cloud Function이 Admin SDK로 조회).
+    match /logiTokens/{token} {
+      allow read: if isAdmin();
+      allow create, update: if request.resource.data.keys().hasOnly(['token', 'courseId', 'threadKey', 'createdAtMs', 'updatedAtMs'])
+        && request.resource.data.token == token
+        && request.resource.data.token is string && request.resource.data.token.size() >= 20 && request.resource.data.token.size() <= 4096
+        && request.resource.data.courseId is string && request.resource.data.courseId.size() <= 100
+        && request.resource.data.get('threadKey', '') is string && request.resource.data.get('threadKey', '').size() <= 60;
+      allow delete: if true;
+    }
+
+    // ── 수업 보드(협업 게시판, 패들렛 벤치마킹) ──
+    // 보드 설정: 참여 페이지가 읽어야 하므로 공개 읽기, 쓰기는 '수업 보드' 탭 권한.
+    match /collabBoards/{boardId} {
+      allow read: if true;
+      allow write: if canTab('pad');
+    }
+
+    // 게시물: 익명 참여(개인정보 없음 — 닉네임은 자유 필명, deviceKey는 무작위 기기 문자열).
+    // 승인제 보드의 미승인 글은 관리자만 읽음(참여자 본인 표시는 클라이언트 캐시로 처리).
+    match /collabPosts/{postId} {
+      function boardOf(bid) {
+        return get(/databases/$(database)/documents/collabBoards/$(bid)).data;
+      }
+      function keysOk() {
+        return request.resource.data.keys().hasOnly(
+          ['boardId','columnId','title','body','nickname','linkUrl','imageData','color',
+           'deviceKey','likes','comments','approved','deleted','createdAtMs','updatedAtMs']);
+      }
+      function textOk() {
+        return request.resource.data.title is string && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 100
+          && request.resource.data.get('body', '').size() <= 2000
+          && request.resource.data.get('nickname', '').size() <= 20
+          && request.resource.data.get('linkUrl', '').size() <= 500
+          && request.resource.data.get('imageData', '').size() <= 400000
+          && request.resource.data.get('color', '').size() <= 20;
+      }
+      allow read: if resource.data.approved == true || isAdmin();
+      // 생성: 활성 보드에만, 승인 상태는 보드의 승인제 설정을 강제(클라이언트 조작 방지).
+      allow create: if keysOk() && textOk()
+        && request.resource.data.boardId is string && request.resource.data.boardId.size() <= 64
+        && boardOf(request.resource.data.boardId).active != false
+        && request.resource.data.approved == !boardOf(request.resource.data.boardId).get('moderated', false)
+        && request.resource.data.likes == 0
+        && request.resource.data.comments == []
+        && request.resource.data.deleted == false;
+      allow update: if isAdmin()
+        // 반응: likes만 +1 (보드 반응 설정이 켜진 경우)
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes'])
+            && request.resource.data.likes == resource.data.likes + 1
+            && boardOf(resource.data.boardId).get('reaction', 'like') != 'none')
+        // 댓글: comments 배열에 1건 추가 (보드 댓글 설정이 켜진 경우)
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['comments'])
+            && request.resource.data.comments.size() == resource.data.comments.size() + 1
+            && boardOf(resource.data.boardId).get('comments', false) == true)
+        // 본인 글 수정·삭제표시: 작성 기기 키 일치 시(내부 교육용 수준의 신뢰).
+        || (request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['title','body','nickname','linkUrl','imageData','color','columnId','deleted','updatedAtMs'])
+            && request.resource.data.deviceKey == resource.data.deviceKey
+            && keysOk() && textOk());
+      allow delete: if canTab('pad');
+    }
+
+    // 퀴즈 세트(문제·보기·정답): 관리자 전용 — 어느 기기에서든 동일 목록.
+    // 정답이 들어 있으므로 공개 읽기 금지(참가자는 RTDB 게임 데이터만 사용).
+    match /quizzes/{id} {
+      allow read: if isAdmin();
+      allow write: if canWrite();
+    }
+
+    // 퀴즈 게임 기록(리포트): 게임 종료 시 호스트(관리자)가 저장.
+    // 닉네임·점수·문항별 정오답 수만(단답형 응답 원문 미저장). 계속 보관, 수동 삭제.
+    match /quizReports/{id} {
+      allow read: if isAdmin();
+      allow create, delete: if canWrite();
+      allow update: if false; // 기록 변조 방지 — 저장 후 수정 불가.
+    }
+
+    // 기관(테넌트) 레지스트리 — 허브 프로젝트에서만 의미 있음.
+    // config는 공개값(도메인·보안규칙이 실제 방어선)이라 공개 읽기, 등록·편집은 마스터만.
+    match /orgs/{orgId} {
+      allow read: if true;
+      allow write: if isMaster();
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // [B] ASTC Video Vault 규칙 — 이 저장소(astc-video-vault)가 관리
+    // ════════════════════════════════════════════════════════════════════
+    // 컬렉션: users(회원), videos(비디오 메타), meta(용량 집계)
+    // LMS 컬렉션과 이름이 겹치지 않음을 확인하고 같은 DB를 공유한다.
+    // videos·meta 쓰기는 Cloudflare Workers(서비스 계정 — 규칙을 우회)만 수행.
+
+    // vault 회원 프로필. (LMS의 admins 판정과는 완전히 별개)
+    function vaultUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function vaultSignedIn() {
+      return request.auth != null;
+    }
+    // 승인된 회원: users/{본인 uid} 문서가 있고 approved == true.
+    function vaultApproved() {
+      return vaultSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && vaultUserData().approved == true;
+    }
+    // vault 관리자: 승인된 회원 중 role == 'admin'.
+    function vaultAdmin() {
+      return vaultApproved() && vaultUserData().role == 'admin';
+    }
+    // 가입 허용 도메인(@airport.co.kr) 서버 측 강제 —
+    // 공개 apiKey로 Auth REST 직접 가입해도 users 문서를 만들 수 없게 차단.
+    function vaultEmailOk() {
+      return vaultSignedIn()
+        && request.auth.token.email is string
+        && request.auth.token.email.lower().matches('.*@airport[.]co[.]kr');
+    }
+
+    // 회원: 본인 읽기 + 관리자 전체 읽기.
+    // 생성은 본인 1회(가입 직후), role=member·approved=false 고정 —
+    // 클라이언트가 스스로 권한·승인을 올리는 것을 차단한다.
+    // 승인·역할 변경·삭제는 vault 관리자만(admin.html).
+    match /users/{uid} {
+      allow read: if vaultSignedIn() && (request.auth.uid == uid || vaultAdmin());
+      allow create: if vaultSignedIn() && request.auth.uid == uid
+        && vaultEmailOk()
+        && request.resource.data.keys().hasOnly(['email', 'displayName', 'role', 'approved', 'createdAt'])
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 50
+        && request.resource.data.role == 'member'
+        && request.resource.data.approved == false;
+      allow update: if vaultAdmin();
+      allow delete: if vaultAdmin();
+    }
+
+    // 비디오 메타데이터: 승인 회원 읽기, 쓰기는 Workers(서비스 계정)만.
+    match /videos/{videoId} {
+      allow read: if vaultApproved();
+      allow write: if false;
+    }
+
+    // 용량 집계(meta/storage): 승인 회원 읽기(UI 게이지), 쓰기는 Workers만.
+    match /meta/{docId} {
+      allow read: if vaultApproved();
+      allow write: if false;
+    }
+  }
+}
