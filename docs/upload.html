@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ASTC Video Vault — 업로드</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1><a href="list.html">ASTC Video Vault</a></h1>
+      <nav class="nav-links">
+        <a href="list.html">목록</a>
+        <a href="upload.html" class="active" data-admin-only hidden>업로드</a>
+        <a href="admin.html" data-admin-only hidden>관리</a>
+      </nav>
+      <div class="user-box">
+        <span id="user-email"></span>
+        <button id="logout-btn" type="button" class="small secondary">로그아웃</button>
+      </div>
+    </header>
+
+    <main>
+      <h2>비디오 업로드 (관리자)</h2>
+      <form id="upload-form" class="entry-form">
+        <label>제목<input type="text" name="title" required maxlength="200" /></label>
+        <label>과정 분류
+          <select name="course" required>
+            <option value="">과정 목록 불러오는 중…</option>
+          </select>
+        </label>
+        <label>설명 (선택)<textarea name="description" rows="3" maxlength="2000"></textarea></label>
+        <label>MP4 파일 (최대 500MB)
+          <input type="file" name="file" accept=".mp4,video/mp4" required />
+        </label>
+        <button id="upload-btn" type="submit">업로드</button>
+        <div class="progress-wrap" id="progress-wrap" hidden>
+          <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+          <p id="progress-text" class="progress-text"></p>
+        </div>
+        <p id="upload-error" class="error"></p>
+        <p id="upload-ok" class="ok-msg"></p>
+      </form>
+    </main>
+
+    <script type="module">
+      import { requireApproved } from "./js/guard.js";
+      import { api, putToR2 } from "./js/api.js";
+
+      const ctx = await requireApproved({ adminOnly: true });
+      if (ctx) {
+        const MAX_FILE_BYTES = 500 * 1024 * 1024;
+        const form = document.getElementById("upload-form");
+        const courseSelect = form.course;
+        const uploadBtn = document.getElementById("upload-btn");
+        const errEl = document.getElementById("upload-error");
+        const okEl = document.getElementById("upload-ok");
+        const progressWrap = document.getElementById("progress-wrap");
+        const progressFill = document.getElementById("progress-fill");
+        const progressText = document.getElementById("progress-text");
+
+        // 과정 분류: LMS programs 목록을 Workers 경유로 로드(하드코딩 금지 — 결정 #1·#2).
+        try {
+          const { courses } = await api("/courses");
+          courseSelect.innerHTML = '<option value="">과정을 선택하세요</option>'
+            + courses.map((c) => `<option>${c.replace(/</g, "&lt;")}</option>`).join("");
+        } catch (e) {
+          courseSelect.innerHTML = '<option value="">과정 목록을 불러오지 못했습니다</option>';
+          errEl.textContent = e.message;
+        }
+
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          errEl.textContent = "";
+          okEl.textContent = "";
+          const file = form.file.files[0];
+          const title = form.title.value.trim();
+          const course = form.course.value;
+
+          // 클라이언트 사전 검사(UX) — 최종 검증은 Workers가 수행한다.
+          if (!file) { errEl.textContent = "파일을 선택해 주세요."; return; }
+          if (!file.name.toLowerCase().endsWith(".mp4") || (file.type && file.type !== "video/mp4")) {
+            errEl.textContent = "MP4 파일만 업로드할 수 있습니다.";
+            return;
+          }
+          if (file.size > MAX_FILE_BYTES) {
+            errEl.textContent = "파일 크기는 500MB를 초과할 수 없습니다.";
+            return;
+          }
+          if (!course) { errEl.textContent = "과정 분류를 선택해 주세요."; return; }
+
+          uploadBtn.disabled = true;
+          progressWrap.hidden = false;
+          progressFill.style.width = "0%";
+          progressText.textContent = "업로드 준비 중…";
+          try {
+            // 1) 서버 검증 + pending 문서 생성 + presigned PUT URL 발급.
+            const init = await api("/upload/init", {
+              method: "POST",
+              body: {
+                title,
+                course,
+                description: form.description.value.trim(),
+                fileName: file.name,
+                sizeBytes: file.size,
+                contentType: "video/mp4",
+              },
+            });
+            // 2) 브라우저 → R2 직접 PUT (Workers 미경유).
+            await putToR2(init.uploadUrl, file, (loaded, total) => {
+              const pct = Math.round((loaded / total) * 100);
+              progressFill.style.width = `${pct}%`;
+              progressText.textContent = `전송 중 ${pct}%`;
+            });
+            // 3) 업로드 완료 확정(서버가 실제 크기 검증 후 ready 전환).
+            progressText.textContent = "업로드 확인 중…";
+            await api("/upload/complete", { method: "POST", body: { videoId: init.videoId } });
+            progressFill.style.width = "100%";
+            progressText.textContent = "완료";
+            okEl.innerHTML = `업로드가 완료되었습니다. <a href="watch.html?id=${encodeURIComponent(init.videoId)}">바로 보기</a>`;
+            form.reset();
+          } catch (err) {
+            errEl.textContent = err.message;
+          } finally {
+            uploadBtn.disabled = false;
+          }
+        });
+      }
+    </script>
+  </body>
+</html>

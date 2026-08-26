@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ASTC Video Vault — 비디오 목록</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1><a href="list.html">ASTC Video Vault</a></h1>
+      <nav class="nav-links">
+        <a href="list.html" class="active">목록</a>
+        <a href="upload.html" data-admin-only hidden>업로드</a>
+        <a href="admin.html" data-admin-only hidden>관리</a>
+      </nav>
+      <div class="user-box">
+        <span id="user-email"></span>
+        <button id="logout-btn" type="button" class="small secondary">로그아웃</button>
+      </div>
+    </header>
+
+    <main>
+      <!-- 총 사용량 게이지 -->
+      <div class="gauge-wrap">
+        <span id="gauge-text">사용량 확인 중…</span>
+        <div class="gauge-bar"><div id="gauge-fill" class="gauge-fill"></div></div>
+      </div>
+
+      <!-- 과정별 필터 + 제목 검색 -->
+      <div class="filter-row">
+        <select id="course-filter"><option value="">전체 과정</option></select>
+        <input id="search-input" type="search" placeholder="제목 검색" />
+      </div>
+
+      <div id="video-grid" class="video-grid"></div>
+      <p id="empty-msg" class="empty" hidden>표시할 비디오가 없습니다.</p>
+    </main>
+
+    <script type="module">
+      import {
+        collection,
+        getDocs,
+        query,
+        orderBy,
+        doc,
+        getDoc,
+      } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+      import { db } from "./js/firebase.js";
+      import { requireApproved, escapeHtml, fmtBytes, fmtDate } from "./js/guard.js";
+
+      const ctx = await requireApproved();
+      if (ctx) {
+        const LIMIT_BYTES = 8 * 1024 * 1024 * 1024;
+        const grid = document.getElementById("video-grid");
+        const emptyMsg = document.getElementById("empty-msg");
+        const courseFilter = document.getElementById("course-filter");
+        const searchInput = document.getElementById("search-input");
+        let videos = [];
+
+        // 총 사용량 게이지 — meta/storage는 승인 회원 읽기 허용(rules).
+        try {
+          const snap = await getDoc(doc(db, "meta", "storage"));
+          const total = snap.exists() ? Number(snap.data().totalBytes) || 0 : 0;
+          const pct = Math.min(100, Math.round((total / LIMIT_BYTES) * 100));
+          document.getElementById("gauge-text").textContent =
+            `총 사용량 ${fmtBytes(total)} / ${fmtBytes(LIMIT_BYTES)} (${pct}%)`;
+          const fill = document.getElementById("gauge-fill");
+          fill.style.width = `${pct}%`;
+          if (pct >= 90) fill.classList.add("warn");
+        } catch {
+          document.getElementById("gauge-text").textContent = "사용량 정보를 불러올 수 없습니다.";
+        }
+
+        // 목록: ready 상태만 표시. 과정 필터 선택지는 실제 존재하는 값에서 도출(결정 #12).
+        const rows = await getDocs(query(collection(db, "videos"), orderBy("createdAt", "desc")));
+        videos = rows.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .filter((v) => v.status === "ready");
+
+        const courses = [...new Set(videos.map((v) => v.course).filter(Boolean))]
+          .sort((a, b) => a.localeCompare(b, "ko"));
+        for (const c of courses) {
+          const opt = document.createElement("option");
+          opt.value = c;
+          opt.textContent = c;
+          courseFilter.appendChild(opt);
+        }
+
+        function render() {
+          const course = courseFilter.value;
+          const keyword = searchInput.value.trim().toLowerCase();
+          const shown = videos.filter((v) =>
+            (!course || v.course === course)
+            && (!keyword || String(v.title).toLowerCase().includes(keyword)));
+          grid.innerHTML = shown.map((v) => `
+            <a class="video-card" href="watch.html?id=${encodeURIComponent(v.id)}">
+              <span class="badge">${escapeHtml(v.course)}</span>
+              <span class="v-title">${escapeHtml(v.title)}</span>
+              <span class="v-meta">${fmtBytes(v.sizeBytes)} · ${escapeHtml(v.uploaderName || "")} · ${fmtDate(v.createdAt)}</span>
+            </a>`).join("");
+          emptyMsg.hidden = shown.length > 0;
+        }
+        courseFilter.addEventListener("change", render);
+        searchInput.addEventListener("input", render);
+        render();
+      }
+    </script>
+  </body>
+</html>

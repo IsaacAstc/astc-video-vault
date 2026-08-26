@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ASTC Video Vault — 관리</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1><a href="list.html">ASTC Video Vault</a></h1>
+      <nav class="nav-links">
+        <a href="list.html">목록</a>
+        <a href="upload.html" data-admin-only hidden>업로드</a>
+        <a href="admin.html" class="active" data-admin-only hidden>관리</a>
+      </nav>
+      <div class="user-box">
+        <span id="user-email"></span>
+        <button id="logout-btn" type="button" class="small secondary">로그아웃</button>
+      </div>
+    </header>
+
+    <main>
+      <h2>회원 관리</h2>
+      <p class="hint">
+        승인 대기 회원을 승인하거나 역할을 변경합니다.
+        회원 삭제는 접근 권한만 회수합니다(Firebase Auth 계정 자체 삭제는 콘솔에서 별도 수행).
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>표시명</th><th>이메일</th><th>역할</th><th>상태</th><th>가입일</th><th>동작</th></tr>
+          </thead>
+          <tbody id="user-tbody"></tbody>
+        </table>
+      </div>
+      <p id="user-error" class="error"></p>
+
+      <h2>비디오 관리</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>제목</th><th>과정</th><th>크기</th><th>상태</th><th>업로더</th><th>등록일</th><th>동작</th></tr>
+          </thead>
+          <tbody id="video-tbody"></tbody>
+        </table>
+      </div>
+      <p id="video-error" class="error"></p>
+    </main>
+
+    <script type="module">
+      import {
+        collection,
+        getDocs,
+        query,
+        orderBy,
+        doc,
+        updateDoc,
+        deleteDoc,
+      } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+      import { db } from "./js/firebase.js";
+      import { requireApproved, escapeHtml, fmtBytes, fmtDate } from "./js/guard.js";
+      import { api } from "./js/api.js";
+
+      const ctx = await requireApproved({ adminOnly: true });
+      if (ctx) {
+        const userTbody = document.getElementById("user-tbody");
+        const videoTbody = document.getElementById("video-tbody");
+        const userError = document.getElementById("user-error");
+        const videoError = document.getElementById("video-error");
+
+        // ── 회원 목록 ──
+        async function loadUsers() {
+          userError.textContent = "";
+          const rows = await getDocs(collection(db, "users"));
+          const users = rows.docs
+            .map((d) => ({ uid: d.id, ...d.data() }))
+            .sort((a, b) => Number(a.approved) - Number(b.approved)
+              || String(a.displayName).localeCompare(String(b.displayName), "ko"));
+          userTbody.innerHTML = users.map((u) => `
+            <tr data-uid="${escapeHtml(u.uid)}">
+              <td>${escapeHtml(u.displayName)}</td>
+              <td>${escapeHtml(u.email)}</td>
+              <td>
+                <select data-act="role">
+                  <option value="member"${u.role === "member" ? " selected" : ""}>member</option>
+                  <option value="admin"${u.role === "admin" ? " selected" : ""}>admin</option>
+                </select>
+              </td>
+              <td>${u.approved ? "승인됨" : "<strong>대기</strong>"}</td>
+              <td>${fmtDate(u.createdAt)}</td>
+              <td>
+                ${u.approved ? "" : '<button class="small" data-act="approve" type="button">승인</button>'}
+                <button class="small danger" data-act="remove" type="button">삭제</button>
+              </td>
+            </tr>`).join("");
+        }
+
+        userTbody.addEventListener("click", async (e) => {
+          const btn = e.target.closest("button[data-act]");
+          if (!btn) return;
+          const uid = btn.closest("tr").dataset.uid;
+          userError.textContent = "";
+          try {
+            if (btn.dataset.act === "approve") {
+              await updateDoc(doc(db, "users", uid), { approved: true });
+            } else if (btn.dataset.act === "remove") {
+              if (!confirm("이 회원의 접근 권한을 삭제할까요?")) return;
+              if (uid === ctx.user.uid) { userError.textContent = "본인 계정은 삭제할 수 없습니다."; return; }
+              await deleteDoc(doc(db, "users", uid));
+            }
+            await loadUsers();
+          } catch (err) {
+            userError.textContent = err.message || "처리에 실패했습니다.";
+          }
+        });
+
+        userTbody.addEventListener("change", async (e) => {
+          const sel = e.target.closest("select[data-act='role']");
+          if (!sel) return;
+          const uid = sel.closest("tr").dataset.uid;
+          userError.textContent = "";
+          try {
+            if (uid === ctx.user.uid && sel.value !== "admin") {
+              userError.textContent = "본인 계정의 관리자 권한은 해제할 수 없습니다.";
+              sel.value = "admin";
+              return;
+            }
+            await updateDoc(doc(db, "users", uid), { role: sel.value });
+            await loadUsers();
+          } catch (err) {
+            userError.textContent = err.message || "역할 변경에 실패했습니다.";
+          }
+        });
+
+        // ── 비디오 목록(삭제는 Workers 경유 — R2 객체·용량 집계 함께 정리) ──
+        async function loadVideos() {
+          videoError.textContent = "";
+          const rows = await getDocs(query(collection(db, "videos"), orderBy("createdAt", "desc")));
+          const videos = rows.docs.map((d) => ({ id: d.id, ...d.data() }));
+          videoTbody.innerHTML = videos.map((v) => `
+            <tr data-id="${escapeHtml(v.id)}">
+              <td>${escapeHtml(v.title)}</td>
+              <td>${escapeHtml(v.course)}</td>
+              <td>${fmtBytes(v.sizeBytes)}</td>
+              <td>${v.status === "ready" ? "게시됨" : "업로드 중"}</td>
+              <td>${escapeHtml(v.uploaderName || "")}</td>
+              <td>${fmtDate(v.createdAt)}</td>
+              <td><button class="small danger" data-act="del" type="button">삭제</button></td>
+            </tr>`).join("");
+          if (!videos.length) {
+            videoTbody.innerHTML = '<tr><td colspan="7">등록된 비디오가 없습니다.</td></tr>';
+          }
+        }
+
+        videoTbody.addEventListener("click", async (e) => {
+          const btn = e.target.closest("button[data-act='del']");
+          if (!btn) return;
+          const id = btn.closest("tr").dataset.id;
+          if (!confirm("이 비디오를 삭제할까요? 파일도 함께 삭제됩니다.")) return;
+          videoError.textContent = "";
+          btn.disabled = true;
+          try {
+            await api(`/videos/${encodeURIComponent(id)}`, { method: "DELETE" });
+            await loadVideos();
+          } catch (err) {
+            videoError.textContent = err.message;
+            btn.disabled = false;
+          }
+        });
+
+        await loadUsers();
+        await loadVideos();
+      }
+    </script>
+  </body>
+</html>

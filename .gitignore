@@ -1,0 +1,17 @@
+# 의존성·빌드 산출물
+node_modules/
+.wrangler/
+.firebase/
+
+# 비밀키·서비스 계정 키 — 절대 커밋 금지 (wrangler secret으로만 관리)
+*service-account*.json
+*serviceAccount*.json
+*.pem
+*.key
+.dev.vars
+.env
+.env.*
+
+# OS·에디터
+.DS_Store
+Thumbs.db

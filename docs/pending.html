@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ASTC Video Vault — 승인 대기</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <section class="center-view">
+      <div class="card-box">
+        <h1>승인 대기 중</h1>
+        <p class="subtitle" id="pending-msg">
+          가입 신청이 접수되었습니다.<br />
+          관리자 승인 후 이용할 수 있습니다.
+        </p>
+        <button id="refresh-btn" type="button" class="secondary">승인 여부 다시 확인</button>
+        <button id="logout-btn2" type="button">로그아웃</button>
+        <p id="pending-error" class="error"></p>
+      </div>
+    </section>
+
+    <script type="module">
+      import { signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+      import { auth } from "./js/firebase.js";
+      import { authState, loadProfile } from "./js/guard.js";
+
+      const user = await authState();
+      if (!user) location.replace("index.html");
+
+      async function check() {
+        let profile = null;
+        try { profile = await loadProfile(user.uid); } catch { /* 규칙 거부 = 미승인 */ }
+        if (profile && profile.approved === true) {
+          location.replace("list.html");
+          return true;
+        }
+        return false;
+      }
+      // 진입 시 1회 확인(이미 승인된 경우 바로 이동).
+      if (user) await check();
+
+      document.getElementById("refresh-btn").addEventListener("click", async () => {
+        const ok = await check();
+        if (!ok) document.getElementById("pending-error").textContent = "아직 승인되지 않았습니다.";
+      });
+      document.getElementById("logout-btn2").addEventListener("click", async () => {
+        await signOut(auth);
+        location.replace("index.html");
+      });
+    </script>
+  </body>
+</html>

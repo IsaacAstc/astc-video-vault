@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ASTC Video Vault — 재생</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1><a href="list.html">ASTC Video Vault</a></h1>
+      <nav class="nav-links">
+        <a href="list.html">목록</a>
+        <a href="upload.html" data-admin-only hidden>업로드</a>
+        <a href="admin.html" data-admin-only hidden>관리</a>
+      </nav>
+      <div class="user-box">
+        <span id="user-email"></span>
+        <button id="logout-btn" type="button" class="small secondary">로그아웃</button>
+      </div>
+    </header>
+
+    <main>
+      <div class="player-box" id="player-box" hidden>
+        <!-- 스트리밍 재생: presigned GET URL을 src로 지정, 브라우저가 Range 요청으로 구간 로드 -->
+        <video id="player" controls preload="metadata"></video>
+      </div>
+      <div class="watch-meta" id="watch-meta" hidden>
+        <h2 id="v-title"></h2>
+        <p class="v-meta" id="v-meta"></p>
+        <p class="desc" id="v-desc"></p>
+        <div class="watch-actions">
+          <button id="download-btn" type="button">다운로드</button>
+          <a href="list.html"><button type="button" class="secondary">목록으로</button></a>
+        </div>
+        <p id="watch-error" class="error"></p>
+      </div>
+      <p id="load-error" class="empty" hidden></p>
+    </main>
+
+    <script type="module">
+      import {
+        doc,
+        getDoc,
+      } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+      import { db } from "./js/firebase.js";
+      import { requireApproved, escapeHtml, fmtBytes, fmtDate } from "./js/guard.js";
+      import { api } from "./js/api.js";
+
+      const ctx = await requireApproved();
+      if (ctx) {
+        const videoId = new URLSearchParams(location.search).get("id") || "";
+        const loadError = document.getElementById("load-error");
+
+        function fail(msg) {
+          loadError.textContent = msg;
+          loadError.hidden = false;
+        }
+
+        if (!videoId) {
+          fail("비디오 ID가 없습니다. 목록에서 다시 선택해 주세요.");
+        } else {
+          try {
+            const snap = await getDoc(doc(db, "videos", videoId));
+            if (!snap.exists()) throw new Error("비디오를 찾을 수 없습니다.");
+            const v = snap.data();
+            if (v.status !== "ready") throw new Error("아직 업로드가 완료되지 않은 비디오입니다.");
+
+            document.title = `ASTC Video Vault — ${v.title}`;
+            document.getElementById("v-title").textContent = v.title;
+            document.getElementById("v-meta").textContent =
+              `${v.course} · ${fmtBytes(v.sizeBytes)} · ${v.uploaderName || ""} · ${fmtDate(v.createdAt)}`;
+            document.getElementById("v-desc").textContent = v.description || "";
+            document.getElementById("watch-meta").hidden = false;
+
+            // 스트리밍 재생용 presigned GET URL(1시간 유효).
+            const { url } = await api(`/videos/${encodeURIComponent(videoId)}/url`);
+            const player = document.getElementById("player");
+            player.src = url;
+            document.getElementById("player-box").hidden = false;
+
+            // 다운로드: Content-Disposition attachment URL을 새로 발급받아 이동.
+            document.getElementById("download-btn").addEventListener("click", async () => {
+              const errEl = document.getElementById("watch-error");
+              errEl.textContent = "";
+              try {
+                const res = await api(`/videos/${encodeURIComponent(videoId)}/url?download=1`);
+                location.href = res.url;
+              } catch (e) {
+                errEl.textContent = e.message;
+              }
+            });
+          } catch (e) {
+            fail(e.message || "비디오를 불러올 수 없습니다.");
+          }
+        }
+      }
+    </script>
+  </body>
+</html>

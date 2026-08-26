@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ASTC Video Vault — 로그인</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <section class="center-view">
+      <!-- 로그인 -->
+      <form id="login-form" class="card-box">
+        <h1>ASTC Video Vault</h1>
+        <p class="subtitle">강의자료 비디오 저장소</p>
+        <label>이메일<input type="email" name="email" required autocomplete="username" placeholder="id@airport.co.kr" /></label>
+        <label>비밀번호<input type="password" name="password" required autocomplete="current-password" /></label>
+        <button type="submit">로그인</button>
+        <p id="login-error" class="error"></p>
+        <p class="switch-line">계정이 없으신가요? <a href="#" id="show-signup">회원가입</a></p>
+      </form>
+
+      <!-- 회원가입 -->
+      <form id="signup-form" class="card-box" hidden>
+        <h1>회원가입</h1>
+        <p class="subtitle">@airport.co.kr 이메일만 가입할 수 있습니다.<br />가입 후 관리자 승인이 필요합니다.</p>
+        <label>이메일<input type="email" name="email" required autocomplete="username" placeholder="id@airport.co.kr" /></label>
+        <label>표시명(이름)<input type="text" name="displayName" required maxlength="50" autocomplete="name" /></label>
+        <label>비밀번호<input type="password" name="password" required minlength="6" autocomplete="new-password" /></label>
+        <p class="hint">이메일과 표시명 외의 개인정보는 수집하지 않습니다.</p>
+        <button type="submit">가입 신청</button>
+        <p id="signup-error" class="error"></p>
+        <p class="switch-line">이미 계정이 있으신가요? <a href="#" id="show-login">로그인</a></p>
+      </form>
+    </section>
+
+    <script type="module">
+      import {
+        signInWithEmailAndPassword,
+        createUserWithEmailAndPassword,
+      } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+      import {
+        doc,
+        setDoc,
+        serverTimestamp,
+      } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+      import { auth, db } from "./js/firebase.js";
+      import { authState, loadProfile } from "./js/guard.js";
+
+      const ALLOWED_DOMAIN = "@airport.co.kr"; // 클라이언트 검사(UX) — 실제 강제는 rules·Workers
+      const loginForm = document.getElementById("login-form");
+      const signupForm = document.getElementById("signup-form");
+      const loginError = document.getElementById("login-error");
+      const signupError = document.getElementById("signup-error");
+
+      // Firebase Auth 오류 코드 → 한국어 안내.
+      function authMessage(e) {
+        const code = e && e.code ? e.code : "";
+        const map = {
+          "auth/invalid-credential": "이메일 또는 비밀번호가 올바르지 않습니다.",
+          "auth/wrong-password": "이메일 또는 비밀번호가 올바르지 않습니다.",
+          "auth/user-not-found": "등록되지 않은 계정입니다. 회원가입을 진행해 주세요.",
+          "auth/invalid-email": "이메일 형식이 올바르지 않습니다.",
+          "auth/email-already-in-use": "이미 가입된 이메일입니다. 로그인해 주세요.",
+          "auth/weak-password": "비밀번호는 6자 이상이어야 합니다.",
+          "auth/too-many-requests": "시도 횟수가 너무 많습니다. 잠시 후 다시 시도해 주세요.",
+          "auth/network-request-failed": "네트워크 오류가 발생했습니다. 연결을 확인해 주세요.",
+        };
+        return map[code] || (e && e.message) || "요청을 처리할 수 없습니다.";
+      }
+
+      // 로그인 상태에 따라 목적지 결정: 승인 → 목록, 미승인/문서 없음 → 대기.
+      async function goByProfile(user) {
+        let profile = null;
+        try { profile = await loadProfile(user.uid); } catch { /* 미승인 상태의 규칙 거부 */ }
+        location.replace(profile && profile.approved === true ? "list.html" : "pending.html");
+      }
+
+      // 이미 로그인되어 있으면 바로 이동.
+      const existing = await authState();
+      if (existing) { await goByProfile(existing); }
+
+      document.getElementById("show-signup").addEventListener("click", (e) => {
+        e.preventDefault();
+        loginForm.hidden = true;
+        signupForm.hidden = false;
+      });
+      document.getElementById("show-login").addEventListener("click", (e) => {
+        e.preventDefault();
+        signupForm.hidden = true;
+        loginForm.hidden = false;
+      });
+
+      loginForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        loginError.textContent = "";
+        try {
+          const cred = await signInWithEmailAndPassword(
+            auth, loginForm.email.value.trim(), loginForm.password.value);
+          await goByProfile(cred.user);
+        } catch (err) {
+          loginError.textContent = authMessage(err);
+        }
+      });
+
+      signupForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        signupError.textContent = "";
+        const email = signupForm.email.value.trim().toLowerCase();
+        const displayName = signupForm.displayName.value.trim();
+        if (!email.endsWith(ALLOWED_DOMAIN)) {
+          signupError.textContent = "@airport.co.kr 이메일만 가입할 수 있습니다.";
+          return;
+        }
+        if (!displayName) {
+          signupError.textContent = "표시명(이름)을 입력해 주세요.";
+          return;
+        }
+        try {
+          const cred = await createUserWithEmailAndPassword(
+            auth, email, signupForm.password.value);
+          // 회원 프로필 생성 — role/approved는 rules가 member/false로 강제한다.
+          await setDoc(doc(db, "users", cred.user.uid), {
+            email: cred.user.email,
+            displayName,
+            role: "member",
+            approved: false,
+            createdAt: serverTimestamp(),
+          });
+          location.replace("pending.html");
+        } catch (err) {
+          signupError.textContent = authMessage(err);
+        }
+      });
+    </script>
+  </body>
+</html>
