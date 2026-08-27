@@ -1,0 +1,57 @@
+# LMS 규칙 단방향 동기화 워크플로.
+# IsaacAstc/lms 의 firestore.rules(원문)가 바뀌면, 이 저장소 병합본의 [A] 구간을
+# 교체한 PR을 자동 생성한다. LMS 저장소는 public이라 토큰 없이 읽기만 하며,
+# LMS 저장소에는 아무것도 추가·수정하지 않는다.
+#
+# - 자동 push가 아닌 PR 방식: 사람이 diff를 확인하고 머지한다.
+# - 머지 후 Firebase 게시는 수동(README 5절) — 게시 뒤 LMS 정상 동작 확인 필수.
+# - 사전 조건: 저장소 Settings → Actions → General → Workflow permissions에서
+#   "Allow GitHub Actions to create and approve pull requests" 체크.
+name: LMS 규칙 동기화
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # 매일 09:00 KST
+  workflow_dispatch: {} # Actions 탭에서 수동 실행 가능
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: LMS 규칙 원문 다운로드
+        run: |
+          curl -fsSL \
+            https://raw.githubusercontent.com/IsaacAstc/lms/main/firestore.rules \
+            -o /tmp/lms-firestore.rules
+
+      - name: 병합본 [A] 구간 교체
+        id: sync
+        run: |
+          result=$(python3 scripts/sync-lms-rules.py /tmp/lms-firestore.rules)
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          echo "동기화 결과: $result"
+
+      - name: 병합본 필수 블록 검증
+        if: steps.sync.outputs.result == 'CHANGED'
+        run: ./scripts/check-rules.sh
+
+      - name: 동기화 PR 생성
+        if: steps.sync.outputs.result == 'CHANGED'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: sync/lms-rules
+          delete-branch: true
+          title: "LMS 규칙 변경 동기화 — firestore.rules [A] 구간 갱신"
+          commit-message: "LMS 규칙 변경 동기화 — [A] 구간을 IsaacAstc/lms 원문으로 교체"
+          body: |
+            IsaacAstc/lms 의 `firestore.rules` 변경이 감지되어 병합본의 [A] 구간을 자동 갱신했습니다.
+
+            - `./scripts/check-rules.sh` 검증을 통과했습니다.
+            - **diff를 확인한 뒤 머지**하고, 병합본 전체를 Firebase 콘솔 규칙 탭에 게시하세요 (README 5절).
+            - 게시 직후 **기존 LMS 화면이 정상 동작하는지 반드시 확인**하세요 (문제 시 콘솔 버전 기록으로 롤백).

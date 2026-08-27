@@ -135,6 +135,11 @@ firebase deploy --only firestore:rules
 
 LMS 쪽 규칙이 변경되면: LMS 저장소의 firestore.rules 원문으로 이 파일의
 `[A]` 구간을 통째로 교체 → 검증 → 재배포.
+이 교체는 **자동화되어 있다** — `.github/workflows/sync-lms-rules.yml`이
+매일 09:00 KST(또는 Actions 탭 수동 실행)에 LMS 원문을 읽어 차이가 있으면
+검증을 거쳐 **동기화 PR**을 자동 생성한다. PR diff 확인 후 머지하고
+아래 방법으로 게시하면 된다. (사전 조건: 저장소 Settings → Actions → General →
+"Allow GitHub Actions to create and approve pull requests" 체크)
 
 **5-대안. 회사망 환경: Firebase 콘솔로 게시** — firebase CLI가 프록시에 막히면
 GitHub의 `firestore.rules`를 Copy raw file로 복사해 Firebase 콘솔 →
