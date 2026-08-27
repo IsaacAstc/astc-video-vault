@@ -5,15 +5,14 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-// 프로젝트 ID는 astc-lms로 확정(사용자 확인 완료).
-// [확인 필요] apiKey·messagingSenderId·appId는 콘솔에서 실제 값으로 교체 (README 배포 절차 2번)
+// 실제 값 반영 완료(2026-08 배포). config는 공개값 — 방어선은 보안규칙과 Workers.
 export const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",                   // [확인 필요]
+  apiKey: "AIzaSyAhi-sqsFdmSGhu_w6sBlJTfuICuuQ82gQ",
   authDomain: "astc-lms.firebaseapp.com",
   projectId: "astc-lms",
   storageBucket: "astc-lms.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",      // [확인 필요]
-  appId: "YOUR_APP_ID",                     // [확인 필요]
+  messagingSenderId: "614712271030",
+  appId: "1:614712271030:web:98c69a78d864787535c617",
 };
 
 export const app = initializeApp(firebaseConfig);
