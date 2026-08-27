@@ -23,28 +23,42 @@
     <main>
       <h2>비디오 업로드 (관리자)</h2>
       <form id="upload-form" class="entry-form">
-        <label>제목<input type="text" name="title" required maxlength="200" /></label>
-        <label>과정 분류
+        <label>과정 분류 (선택한 모든 파일에 공통 적용)
           <select name="course" required>
             <option value="">과정 목록 불러오는 중…</option>
           </select>
         </label>
-        <label>설명 (선택)<textarea name="description" rows="3" maxlength="2000"></textarea></label>
-        <label>MP4 파일 (최대 500MB)
-          <input type="file" name="file" accept=".mp4,video/mp4" required />
+        <label>설명 (선택, 모든 파일에 공통 적용)
+          <textarea name="description" rows="2" maxlength="2000"></textarea>
         </label>
-        <button id="upload-btn" type="submit">업로드</button>
-        <div class="progress-wrap" id="progress-wrap" hidden>
-          <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
-          <p id="progress-text" class="progress-text"></p>
+
+        <!-- 파일 선택: 다중 선택 + 드래그&드롭 -->
+        <div id="dropzone" class="dropzone">
+          MP4 파일을 여기로 끌어다 놓거나
+          <button type="button" id="pick-btn" class="secondary small">파일 선택</button>
+          <span class="hint">여러 개 선택 가능 · 파일당 최대 500MB</span>
         </div>
+        <input type="file" id="file-input" accept=".mp4,video/mp4" multiple hidden />
+
+        <div class="table-wrap" id="queue-wrap" hidden>
+          <table>
+            <thead>
+              <tr><th style="width:40%">제목 (수정 가능)</th><th>파일명</th><th>크기</th><th>상태</th><th></th></tr>
+            </thead>
+            <tbody id="queue-tbody"></tbody>
+          </table>
+        </div>
+        <p id="quota-line" class="hint"></p>
+
+        <button id="upload-btn" type="submit" disabled>업로드 시작</button>
+        <p id="batch-progress" class="progress-text"></p>
         <p id="upload-error" class="error"></p>
         <p id="upload-ok" class="ok-msg"></p>
       </form>
     </main>
 
     <script type="module">
-      import { requireApproved } from "./js/guard.js";
+      import { requireApproved, escapeHtml, fmtBytes } from "./js/guard.js";
       import { api, putToR2 } from "./js/api.js";
 
       const ctx = await requireApproved({ adminOnly: true });
@@ -52,79 +66,233 @@
         const MAX_FILE_BYTES = 500 * 1024 * 1024;
         const form = document.getElementById("upload-form");
         const courseSelect = form.course;
+        const dropzone = document.getElementById("dropzone");
+        const fileInput = document.getElementById("file-input");
+        const queueWrap = document.getElementById("queue-wrap");
+        const queueTbody = document.getElementById("queue-tbody");
+        const quotaLine = document.getElementById("quota-line");
         const uploadBtn = document.getElementById("upload-btn");
+        const batchProgress = document.getElementById("batch-progress");
         const errEl = document.getElementById("upload-error");
         const okEl = document.getElementById("upload-ok");
-        const progressWrap = document.getElementById("progress-wrap");
-        const progressFill = document.getElementById("progress-fill");
-        const progressText = document.getElementById("progress-text");
 
-        // 과정 분류: LMS programs 목록을 Workers 경유로 로드(하드코딩 금지 — 결정 #1·#2).
+        // 업로드 대기열. status: ready | rejected | uploading | done | failed
+        const queue = [];
+        let uploading = false;
+        let remainingBytes = null; // 서버 기준 남은 용량(참고용 — 최종 강제는 Workers)
+
+        // 과정 분류: LMS programs 목록을 Workers 경유로 로드(하드코딩 금지).
         try {
           const { courses } = await api("/courses");
           courseSelect.innerHTML = '<option value="">과정을 선택하세요</option>'
-            + courses.map((c) => `<option>${c.replace(/</g, "&lt;")}</option>`).join("");
+            + courses.map((c) => `<option>${escapeHtml(c)}</option>`).join("");
         } catch (e) {
           courseSelect.innerHTML = '<option value="">과정 목록을 불러오지 못했습니다</option>';
           errEl.textContent = e.message;
         }
 
+        async function refreshQuota() {
+          try {
+            const { totalBytes, limitBytes } = await api("/storage");
+            remainingBytes = Math.max(0, limitBytes - totalBytes);
+          } catch { remainingBytes = null; }
+          updateQuotaLine();
+        }
+
+        function pendingBytes() {
+          return queue.filter((q) => q.status === "ready")
+            .reduce((sum, q) => sum + q.file.size, 0);
+        }
+
+        function updateQuotaLine() {
+          if (remainingBytes === null) { quotaLine.textContent = ""; return; }
+          const need = pendingBytes();
+          let text = `남은 저장 용량: ${fmtBytes(remainingBytes)}`;
+          if (need > 0) text += ` · 선택 파일 합계: ${fmtBytes(need)}`;
+          quotaLine.textContent = text;
+          quotaLine.classList.toggle("error", need > remainingBytes);
+          if (need > remainingBytes) {
+            quotaLine.textContent += " — 남은 용량을 초과합니다. 초과 시점부터 업로드가 거부됩니다.";
+          }
+        }
+
+        // 파일명 → 기본 제목 (확장자 제거, 이후 표에서 수정 가능).
+        function titleFromName(name) {
+          return name.replace(/\.mp4$/i, "").trim() || name;
+        }
+
+        function addFiles(fileList) {
+          okEl.textContent = "";
+          for (const file of fileList) {
+            const item = { file, title: titleFromName(file.name), status: "ready", statusCell: null };
+            // 클라이언트 사전 검사(UX) — 최종 검증은 Workers가 수행.
+            if (!file.name.toLowerCase().endsWith(".mp4") || (file.type && file.type !== "video/mp4")) {
+              item.status = "rejected";
+              item.reason = "MP4 파일만 업로드할 수 있습니다";
+            } else if (file.size > MAX_FILE_BYTES) {
+              item.status = "rejected";
+              item.reason = "500MB 초과";
+            } else if (queue.some((q) => q.status !== "rejected" && q.file.name === file.name && q.file.size === file.size)) {
+              item.status = "rejected";
+              item.reason = "이미 목록에 있는 파일";
+            }
+            queue.push(item);
+          }
+          renderQueue();
+        }
+
+        function statusLabel(item) {
+          if (item.status === "ready") return "대기";
+          if (item.status === "rejected") return `제외 — ${item.reason}`;
+          if (item.status === "done") return "✅ 완료";
+          if (item.status === "failed") return `❌ ${item.reason}`;
+          return item.progressText || "진행 중…";
+        }
+        function setStatus(item, text) {
+          item.progressText = text;
+          if (item.statusCell) item.statusCell.textContent = statusLabel(item);
+        }
+
+        function renderQueue() {
+          queueTbody.innerHTML = "";
+          queue.forEach((item, idx) => {
+            const tr = document.createElement("tr");
+
+            const titleTd = document.createElement("td");
+            const titleInput = document.createElement("input");
+            titleInput.type = "text";
+            titleInput.value = item.title;
+            titleInput.maxLength = 200;
+            titleInput.style.width = "100%";
+            titleInput.disabled = item.status !== "ready";
+            titleInput.addEventListener("input", () => { item.title = titleInput.value; });
+            titleTd.appendChild(titleInput);
+
+            const nameTd = document.createElement("td");
+            nameTd.textContent = item.file.name;
+            const sizeTd = document.createElement("td");
+            sizeTd.textContent = fmtBytes(item.file.size);
+            const statusTd = document.createElement("td");
+            statusTd.textContent = statusLabel(item);
+            item.statusCell = statusTd;
+
+            const actTd = document.createElement("td");
+            if (item.status === "ready" && !uploading) {
+              const rmBtn = document.createElement("button");
+              rmBtn.type = "button";
+              rmBtn.className = "small secondary";
+              rmBtn.textContent = "제거";
+              rmBtn.addEventListener("click", () => {
+                queue.splice(idx, 1);
+                renderQueue();
+              });
+              actTd.appendChild(rmBtn);
+            }
+
+            tr.append(titleTd, nameTd, sizeTd, statusTd, actTd);
+            queueTbody.appendChild(tr);
+          });
+          queueWrap.hidden = queue.length === 0;
+          uploadBtn.disabled = uploading || !queue.some((q) => q.status === "ready");
+          const n = queue.filter((q) => q.status === "ready").length;
+          uploadBtn.textContent = n > 1 ? `업로드 시작 (${n}개)` : "업로드 시작";
+          updateQuotaLine();
+        }
+
+        // 파일 선택 / 드래그&드롭
+        document.getElementById("pick-btn").addEventListener("click", () => fileInput.click());
+        fileInput.addEventListener("change", () => {
+          addFiles(fileInput.files);
+          fileInput.value = ""; // 같은 파일 재선택 허용
+        });
+        ["dragenter", "dragover"].forEach((ev) =>
+          dropzone.addEventListener(ev, (e) => {
+            e.preventDefault();
+            dropzone.classList.add("dragover");
+          }));
+        ["dragleave", "drop"].forEach((ev) =>
+          dropzone.addEventListener(ev, (e) => {
+            e.preventDefault();
+            dropzone.classList.remove("dragover");
+          }));
+        dropzone.addEventListener("drop", (e) => {
+          if (!uploading && e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
+        });
+
+        // 업로드 중 페이지 이탈 경고.
+        window.addEventListener("beforeunload", (e) => {
+          if (uploading) { e.preventDefault(); e.returnValue = ""; }
+        });
+
+        // 순차 업로드: 파일별 init → R2 직접 PUT → complete. 실패해도 다음 파일 계속.
         form.addEventListener("submit", async (e) => {
           e.preventDefault();
           errEl.textContent = "";
           okEl.textContent = "";
-          const file = form.file.files[0];
-          const title = form.title.value.trim();
-          const course = form.course.value;
-
-          // 클라이언트 사전 검사(UX) — 최종 검증은 Workers가 수행한다.
-          if (!file) { errEl.textContent = "파일을 선택해 주세요."; return; }
-          if (!file.name.toLowerCase().endsWith(".mp4") || (file.type && file.type !== "video/mp4")) {
-            errEl.textContent = "MP4 파일만 업로드할 수 있습니다.";
-            return;
-          }
-          if (file.size > MAX_FILE_BYTES) {
-            errEl.textContent = "파일 크기는 500MB를 초과할 수 없습니다.";
-            return;
-          }
+          const course = courseSelect.value;
+          const targets = queue.filter((q) => q.status === "ready");
           if (!course) { errEl.textContent = "과정 분류를 선택해 주세요."; return; }
-
-          uploadBtn.disabled = true;
-          progressWrap.hidden = false;
-          progressFill.style.width = "0%";
-          progressText.textContent = "업로드 준비 중…";
-          try {
-            // 1) 서버 검증 + pending 문서 생성 + presigned PUT URL 발급.
-            const init = await api("/upload/init", {
-              method: "POST",
-              body: {
-                title,
-                course,
-                description: form.description.value.trim(),
-                fileName: file.name,
-                sizeBytes: file.size,
-                contentType: "video/mp4",
-              },
-            });
-            // 2) 브라우저 → R2 직접 PUT (Workers 미경유).
-            await putToR2(init.uploadUrl, file, (loaded, total) => {
-              const pct = Math.round((loaded / total) * 100);
-              progressFill.style.width = `${pct}%`;
-              progressText.textContent = `전송 중 ${pct}%`;
-            });
-            // 3) 업로드 완료 확정(서버가 실제 크기 검증 후 ready 전환).
-            progressText.textContent = "업로드 확인 중…";
-            await api("/upload/complete", { method: "POST", body: { videoId: init.videoId } });
-            progressFill.style.width = "100%";
-            progressText.textContent = "완료";
-            okEl.innerHTML = `업로드가 완료되었습니다. <a href="watch.html?id=${encodeURIComponent(init.videoId)}">바로 보기</a>`;
-            form.reset();
-          } catch (err) {
-            errEl.textContent = err.message;
-          } finally {
-            uploadBtn.disabled = false;
+          if (targets.length === 0) { errEl.textContent = "업로드할 파일을 추가해 주세요."; return; }
+          if (targets.some((q) => !q.title.trim())) {
+            errEl.textContent = "제목이 비어 있는 파일이 있습니다. 표에서 제목을 입력해 주세요.";
+            return;
           }
+
+          uploading = true;
+          renderQueue();
+          courseSelect.disabled = true;
+          form.description.disabled = true;
+          let done = 0;
+          let failed = 0;
+          const total = targets.length;
+
+          for (const item of targets) {
+            item.status = "uploading";
+            setStatus(item, "준비 중…");
+            batchProgress.textContent = `진행: ${done + failed + 1}/${total} 번째 파일 처리 중 (완료 ${done}, 실패 ${failed})`;
+            try {
+              const init = await api("/upload/init", {
+                method: "POST",
+                body: {
+                  title: item.title.trim(),
+                  course,
+                  description: form.description.value.trim(),
+                  fileName: item.file.name,
+                  sizeBytes: item.file.size,
+                  contentType: "video/mp4",
+                },
+              });
+              await putToR2(init.uploadUrl, item.file, (loaded, totalB) => {
+                setStatus(item, `전송 ${Math.round((loaded / totalB) * 100)}%`);
+              });
+              setStatus(item, "확인 중…");
+              await api("/upload/complete", { method: "POST", body: { videoId: init.videoId } });
+              item.status = "done";
+              setStatus(item, "");
+              done++;
+            } catch (err) {
+              item.status = "failed";
+              item.reason = err.message;
+              setStatus(item, "");
+              failed++;
+            }
+          }
+
+          uploading = false;
+          courseSelect.disabled = false;
+          form.description.disabled = false;
+          batchProgress.textContent = "";
+          if (failed === 0) {
+            okEl.innerHTML = `${done}개 파일 업로드가 완료되었습니다. <a href="list.html">목록 보기</a>`;
+          } else {
+            errEl.textContent = `완료 ${done}개, 실패 ${failed}개 — 실패 사유는 표의 상태를 확인해 주세요.`;
+            if (done > 0) okEl.innerHTML = `<a href="list.html">목록 보기</a>`;
+          }
+          renderQueue();
+          await refreshQuota();
         });
+
+        await refreshQuota();
       }
     </script>
   </body>

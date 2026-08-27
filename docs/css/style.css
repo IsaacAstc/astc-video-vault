@@ -187,6 +187,22 @@ tr:last-child td { border-bottom: none; }
 .watch-meta p.desc { white-space: pre-wrap; margin: 0.75rem 0 0; }
 .watch-actions { margin-top: 0.75rem; display: flex; gap: 0.5rem; }
 
+/* ── 일괄 업로드: 드롭존 ── */
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  padding: 1.5rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  background: #fafbfd;
+}
+.dropzone.dragover { border-color: var(--primary); background: #eef3fa; color: var(--primary); }
+
 /* ── 업로드 진행률 ── */
 .progress-wrap { margin-top: 0.25rem; }
 .progress-bar { height: 10px; background: #e6eaf0; border-radius: 999px; overflow: hidden; }
