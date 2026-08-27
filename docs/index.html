@@ -72,7 +72,22 @@
       async function goByProfile(user) {
         let profile = null;
         try { profile = await loadProfile(user.uid); } catch { /* 미승인 상태의 규칙 거부 */ }
-        location.replace(profile && profile.approved === true ? "list.html" : "pending.html");
+        if (!profile) {
+          // 기존 Auth 계정(예: LMS 관리자)이 가입 절차 없이 처음 로그인한 경우 —
+          // 회원 문서를 자동 생성해 승인 대기 상태로 전환한다(규칙이 member/false 강제).
+          try {
+            await setDoc(doc(db, "users", user.uid), {
+              email: user.email,
+              displayName: (user.email || "").split("@")[0],
+              role: "member",
+              approved: false,
+              createdAt: serverTimestamp(),
+            });
+          } catch { /* 허용 도메인 아님 등 규칙 거부 시 그대로 대기 화면으로 */ }
+          location.replace("pending.html");
+          return;
+        }
+        location.replace(profile.approved === true ? "list.html" : "pending.html");
       }
 
       // 이미 로그인되어 있으면 바로 이동.
