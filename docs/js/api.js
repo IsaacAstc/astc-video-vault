@@ -1,8 +1,8 @@
 // Cloudflare Workers API 호출 래퍼 — Firebase ID 토큰을 자동 첨부한다.
 import { auth } from "./firebase.js";
 
-// [확인 필요] Workers 배포 후 실제 주소로 교체 (README 배포 절차 9번)
-export const API_BASE = "https://astc-video-vault.YOUR_ACCOUNT.workers.dev";
+// 배포된 Workers 주소 (2026-08 배포 완료)
+export const API_BASE = "https://astc-video-vault.astc-seoul.workers.dev";
 
 // 공통 호출: 실패 시 서버의 한국어 오류 메시지를 그대로 throw.
 export async function api(path, { method = "GET", body } = {}) {
