@@ -97,6 +97,31 @@ npx wrangler deploy
 배포된 주소 `https://astc-video-vault.<계정명>.workers.dev`를
 `docs/js/api.js`의 `API_BASE`에 기입하고 커밋한다.
 
+### 4-대안. 회사망(프록시 차단) 환경: 대시보드로 배포
+
+사내 프록시/보안장비가 wrangler의 API 통신을 차단하는 경우
+(`wrangler login` 시 `fetch failed` / 인증서 불일치 경고),
+Worker가 의존성 없는 단일 파일이므로 **브라우저 대시보드만으로 배포**할 수 있다.
+실제 2026-08 최초 배포는 이 방법으로 수행했다.
+
+1. dash.cloudflare.com → **Compute (Workers & Pages)** → Create →
+   **Start with Hello World!** → 이름 `astc-video-vault` → Deploy
+2. **Edit code** → GitHub의 `worker/src/index.js`를 열어(Copy raw file)
+   편집기 코드 전체를 교체 → Deploy
+3. Worker → **Bindings** 탭 → Add → **R2 bucket**:
+   Variable name `VIDEOS`, bucket `astc-videos`
+4. Worker → **Settings → Variables and Secrets** → 7개 등록:
+   - Text: `FIREBASE_PROJECT_ID`=`astc-lms`,
+     `ALLOWED_ORIGIN`=`https://isaacastc.github.io`, `R2_BUCKET`=`astc-videos`
+   - Secret: `FIREBASE_SERVICE_ACCOUNT`(키 JSON 전문), `R2_ACCESS_KEY_ID`,
+     `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`
+5. ⚠️ **버전 승격 확인(중요)**: 변수·코드 저장은 새 "버전"을 만들 뿐 자동 반영되지
+   않을 수 있다. **Deployments 탭**에서 Active deployment가 최신 버전인지 확인하고,
+   아니면 최신 버전의 `...` 메뉴 → **Promote to production**.
+   (증상: 브라우저 콘솔에 `Access-Control-Allow-Origin ... 'undefined'` CORS 오류)
+6. 확인: `https://<worker주소>/storage` 접속 시 `{"error":"로그인이 필요합니다."}`
+7. 이후 코드 수정 시에도 같은 방법(Edit code → 붙여넣기 → Deploy → 버전 확인)을 쓴다.
+
 ### 5. Firestore 보안규칙 배포 — ⚠️ 반드시 검증 후
 
 이 저장소의 `firestore.rules`는 **LMS 규칙 원문 + Vault 규칙의 병합본**이며
@@ -110,6 +135,13 @@ firebase deploy --only firestore:rules
 
 LMS 쪽 규칙이 변경되면: LMS 저장소의 firestore.rules 원문으로 이 파일의
 `[A]` 구간을 통째로 교체 → 검증 → 재배포.
+
+**5-대안. 회사망 환경: Firebase 콘솔로 게시** — firebase CLI가 프록시에 막히면
+GitHub의 `firestore.rules`를 Copy raw file로 복사해 Firebase 콘솔 →
+Firestore Database → 규칙 탭에 전체 붙여넣기 후 게시한다. 붙여넣기 후
+첫 줄 `rules_version = '2';`, `[A]`·`[B]` 주석 존재, 문법 오류 없음을 확인하고,
+게시 직후 기존 LMS 화면이 정상 동작하는지 즉시 검증한다
+(문제 시 규칙 탭의 버전 기록에서 롤백). 실제 2026-08 최초 배포는 이 방법으로 수행했다.
 
 ### 6. 첫 관리자 지정
 
