@@ -132,6 +132,7 @@ LMS 구간이 누락된 채 배포하면 운영 중인 LMS가 마비된다.
 ./scripts/check-rules.sh                      # 통과(✅) 확인 후에만 진행
 firebase deploy --only firestore:rules
 ```
+> **자동 배포(권장)**: `sync-lms-rules` 워크플로가 LMS 규칙 변경을 감지하면 병합본을 main에 직접 커밋하고, 저장소 Secrets에 `FIREBASE_SERVICE_ACCOUNT`(서비스 계정 JSON)·`FIREBASE_PROJECT_ID`가 등록돼 있으면 검증 후 규칙까지 자동 배포한다(수동 실행 시 변경이 없어도 재배포). 아래 수동 절차는 시크릿 미등록·비상시용.
 
 LMS 쪽 규칙이 변경되면: LMS 저장소의 firestore.rules 원문으로 이 파일의
 `[A]` 구간을 통째로 교체 → 검증 → 재배포.
