@@ -11,7 +11,10 @@ compatibility_date = "2026-08-01"
 [vars]
 # Firebase 프로젝트 ID — astc-lms로 확정(사용자 확인 완료)
 FIREBASE_PROJECT_ID = "astc-lms"
-# GitHub Pages 도메인(경로 제외한 origin만)
+# 허용할 프론트 origin 목록(경로 제외, 쉼표로 구분).
+# 커스텀 도메인을 붙이면 여기에 추가하고 `npx wrangler deploy`로 반영한다.
+# [확인 필요] FreeDNS 서브도메인 확정 후 추가 예:
+#   ALLOWED_ORIGIN = "https://isaacastc.github.io,https://astcvault.mooo.com"
 ALLOWED_ORIGIN = "https://isaacastc.github.io"
 R2_BUCKET = "astc-videos"
 
