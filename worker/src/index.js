@@ -37,15 +37,15 @@ const cache = {
 
 export default {
   async fetch(request, env) {
-    if (request.method === "OPTIONS") return preflight(env);
+    if (request.method === "OPTIONS") return preflight(env, request);
     try {
       const res = await route(request, env);
-      return withCors(res, env);
+      return withCors(res, env, request);
     } catch (e) {
       const status = e.status || 500;
       const message = e.status ? e.message : "서버 오류가 발생했습니다.";
       if (!e.status) console.error("unhandled:", e);
-      return withCors(json({ error: message }, status), env);
+      return withCors(json({ error: message }, status), env, request);
     }
   },
 };
@@ -580,22 +580,35 @@ function json(data, status = 200) {
   });
 }
 
-// ── CORS: GitHub Pages 도메인만 허용 ──
-function corsHeaders(env) {
+/* ── CORS: 허용 목록에 있는 도메인만 ──
+ * ALLOWED_ORIGIN은 쉼표로 구분한 origin 목록이다(값이 하나면 종전과 동일).
+ * 커스텀 도메인을 붙이는 동안 기존 github.io 주소도 함께 살려두기 위한 구조 —
+ * Access-Control-Allow-Origin에는 목록을 그대로 넣을 수 없어(브라우저가
+ * 단일 값만 인정) 요청 Origin이 목록에 있을 때만 그 값을 되돌려준다. */
+function allowedOrigins(env) {
+  return String(env.ALLOWED_ORIGIN || "").split(",").map((o) => o.trim()).filter(Boolean);
+}
+function corsHeaders(env, request) {
+  const list = allowedOrigins(env);
+  const origin = request?.headers.get("Origin") || "";
+  // 목록에 없으면 첫 번째 값을 돌려준다 — 브라우저는 origin 불일치로 차단하고,
+  // Origin 헤더가 없는 호출(서버 간 요청 등)은 CORS 대상이 아니라 영향이 없다.
+  const allow = list.includes(origin) ? origin : (list[0] || "");
   return {
-    "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN,
+    "Access-Control-Allow-Origin": allow,
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
     "Access-Control-Max-Age": "86400",
+    // 응답이 Origin에 따라 달라지므로 캐시가 섞이지 않게 한다.
     "Vary": "Origin",
   };
 }
-function preflight(env) {
-  return new Response(null, { status: 204, headers: corsHeaders(env) });
+function preflight(env, request) {
+  return new Response(null, { status: 204, headers: corsHeaders(env, request) });
 }
-function withCors(res, env) {
+function withCors(res, env, request) {
   const out = new Response(res.body, res);
-  for (const [k, v] of Object.entries(corsHeaders(env))) out.headers.set(k, v);
+  for (const [k, v] of Object.entries(corsHeaders(env, request))) out.headers.set(k, v);
   return out;
 }
 
