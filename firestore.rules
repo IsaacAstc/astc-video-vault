@@ -199,6 +199,36 @@ service cloud.firestore {
       allow write: if canTab('downloads');
     }
 
+    // 영상 자료(유튜브 일부 공개 링크 목록): 영상 파일은 저장하지 않고 링크·분류만 둔다.
+    //  - 읽기: 관리자 + 승인된 열람 계정(교관 등). 열람 계정은 admins가 아니므로
+    //    isAdmin()이 거짓이라 이 두 컬렉션 외 다른 데이터는 읽을 수 없다.
+    //  - 쓰기: '영상 자료' 탭 권한 관리자만.
+    function isVideoViewer() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/videoViewers/$(adminEmail()))
+        && get(/databases/$(database)/documents/videoViewers/$(adminEmail())).data.approved == true;
+    }
+    match /videoLinks/{id} {
+      allow read: if isAdmin() || isVideoViewer();
+      allow write: if canTab('videos');
+    }
+    match /videoCategories/{id} {
+      allow read: if isAdmin() || isVideoViewer();
+      allow write: if canTab('videos');
+    }
+    // 열람 계정(문서ID=소문자 이메일): 본인이 가입 후 승인 요청(approved=false)만 만들 수 있고,
+    // 승인·해제는 '영상 자료' 탭 권한 관리자만. 이메일 외 개인정보는 저장하지 않는다.
+    match /videoViewers/{email} {
+      allow read: if isAdmin() || (request.auth != null && adminEmail() == email);
+      allow create: if canTab('videos')
+        || (request.auth != null && adminEmail() == email
+            && request.resource.data.keys().hasOnly(['approved', 'requestedAtMs'])
+            && request.resource.data.approved == false
+            && request.resource.data.requestedAtMs is int);
+      allow update: if canTab('videos');
+      allow delete: if canTab('videos') || (request.auth != null && adminEmail() == email);
+    }
+
     // 설문 응답: create 만 공개 허용(완전 익명), 읽기·수정·삭제는 관리자만.
     // expireAt은 서버시각 기준 약 180일 후여야 함(클라이언트 조작 방지, ±2일 허용).
     match /surveyResponses/{responseId} {
